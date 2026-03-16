@@ -216,9 +216,12 @@ const CHECKOUTS={
   44:"S12 D16",43:"S3 D20",42:"S10 D16",41:"S9 D16",40:"D20",
   39:"S7 D16",38:"D19",37:"S5 D16",36:"D18",35:"S3 D16",
   34:"D17",33:"S1 D16",32:"D16",31:"S7 D12",30:"D15",
-  28:"D14",26:"D13",24:"D12",22:"D11",20:"D10",
-  18:"D9",16:"D8",14:"D7",12:"D6",10:"D5",
-  8:"D4",6:"D3",4:"D2",2:"D1"
+  29:"S13 D8",28:"D14",27:"S11 D8",26:"D13",25:"S9 D8",
+  24:"D12",23:"S7 D8",22:"D11",21:"S1 D10",20:"D10",
+  19:"S3 D8",18:"D9",17:"S1 D8",16:"D8",15:"S7 D4",
+  14:"D7",13:"S5 D4",12:"D6",11:"S3 D4",10:"D5",
+  9:"S1 D4",8:"D4",7:"S3 D2",6:"D3",5:"S1 D2",
+  4:"D2",3:"S1 D1",2:"D1"
 };
 const IMPOSSIBLE=[169,168,166,165,163,162,159];
 const NEIGHBOURS={1:[18,4],2:[15,17],3:[17,19],4:[18,13],5:[20,12],6:[10,13],7:[16,19],8:[11,16],9:[12,14],10:[15,6],11:[8,14],12:[5,9],13:[4,6],14:[9,11],15:[2,10],16:[7,8],17:[2,3],18:[1,4],19:[3,7],20:[1,5]};
@@ -326,7 +329,7 @@ let state={
   opponent:'solo', // 'solo' | 'rookie' | 'casual' | 'league' | 'pro'
   players:[], currentPlayer:0, history:[], inputVal:'', winner:null,
   playerNames:['Jij','Speler 2','Speler 3','Speler 4'],
-  killerScreen:'assign', killerPointsNeeded:5, killerSelectedTarget:null, killerDartsLeft:3,
+  killerScreen:'assign', killerPointsNeeded:5, killerSelectedTarget:null, killerDartsLeft:3, killerBullWinner:null,
   // bot state
   botTurnResult:null, botTurnDone:false,
 };
@@ -350,7 +353,7 @@ function startGame(){
       ps.push(mkKillerPlayer(BOT_LEVELS[state.opponent].name+'  '+BOT_LEVELS[state.opponent].emoji,true));
     }
     state.players=ps;
-    state.killerScreen='assign'; state.currentPlayer=0;
+    state.killerScreen='assign'; state.currentPlayer=0; state.killerBullWinner=null;
     state.history=[]; state.winner=null; state.screen='killer'; render(); return;
   }
 
@@ -361,6 +364,14 @@ function startGame(){
   state.players=ps;
   state.currentPlayer=0; state.history=[]; state.winner=null; state.inputVal='';
   state.botTurnResult=null; state.botTurnDone=false;
+
+  // bull throw optioneel voor 501/301 met 2+ spelers
+  if((state.mode==='501'||state.mode==='301')&&state.players.filter(p=>!p.isBot).length>=2){
+    state.screen='bullthrow';
+    state.bullThrowWinner=null;
+    render(); return;
+  }
+
   state.screen='game'; render();
   if(state.players[0]&&state.players[0].isBot){
     setTimeout(()=>{playBotTurn();},600);
@@ -432,7 +443,7 @@ function throwScore(){
   applyScore(val);
 }
 
-function avg(p){if(!p.throws)return'—';return(p.totalScore/p.throws*3).toFixed(1);}
+function avg(p){if(!p.throws)return'—';return(p.totalScore/p.throws).toFixed(1);}
 
 // ─── BOT TURN ─────────────────────────────────────────────────────────────────
 let botTimer=null;
@@ -483,6 +494,14 @@ function confirmBotTurn(){
 }
 
 // ─── KILLER LOGIC ─────────────────────────────────────────────────────────────
+function killerBullSelect(idx){
+  state.killerBullWinner=idx;
+  // sort: bull winner first, rest keep original order
+  const winner=state.players[idx];
+  const others=state.players.filter((_,i)=>i!==idx);
+  state.players=[winner,...others];
+  render();
+}
 function killerAssignNumber(idx){
   const val=parseInt(document.getElementById('kassign_'+idx).value);
   if(isNaN(val)||val<1||val>20){alert('Kies een getal tussen 1 en 20');return;}
@@ -491,45 +510,65 @@ function killerAssignNumber(idx){
 }
 function killerStartGame(){
   if(state.players.some(p=>p.number===null)){alert('Wijs iedereen een nummer toe!');return;}
-  // hoogste nummer begint
-  state.players.sort((a,b)=>b.number-a.number);
-  state.killerScreen='game'; state.currentPlayer=0; state.killerSelectedTarget=null; state.killerDartsLeft=3; render();
+  state.killerScreen='game'; state.currentPlayer=0; state.killerSelectedTarget=null; state.killerDartsLeft=3; state.killerUndoStack=[]; render();
 }
+function killerSnapshot(){
+  return JSON.parse(JSON.stringify({
+    players:state.players,
+    currentPlayer:state.currentPlayer,
+    killerDartsLeft:state.killerDartsLeft,
+    killerSelectedTarget:state.killerSelectedTarget,
+    winner:state.winner,
+    screen:state.screen,
+  }));
+}
+if(!state.killerUndoStack) state.killerUndoStack=[];
+
 function killerThrow(pts,mult){
+  state.killerUndoStack.push(killerSnapshot());
   const p=state.players[state.currentPlayer];
   if(p.eliminated){nextKillerPlayer();return;}
 
-  if(!p.isKiller && p.lives>=0){
-    // vulfase: punten opbouwen, levens lopen mee
-    const newPoints=p.points+pts;
-    if(newPoints>state.killerPointsNeeded){
-      const over=newPoints-state.killerPointsNeeded;
-      p.points=state.killerPointsNeeded-over;
-      p.lives=p.points;
-      state.history.push({player:p.name,action:`+${pts} op ${p.number} (overgooien!)`,result:`terug naar ${p.points}`});
-    } else {
-      p.points=newPoints;
-      p.lives=p.points;
-      state.history.push({player:p.name,action:`+${pts} op ${p.number}`,result:p.points>=state.killerPointsNeeded?'KILLER!':'nog '+(state.killerPointsNeeded-p.points)+' nodig'});
-      if(p.points>=state.killerPointsNeeded){p.isKiller=true;p.lives=state.killerPointsNeeded;}
-    }
-    state.killerDartsLeft--;
-    if(state.killerDartsLeft<=0) nextKillerPlayer();
-    else render();
-
-  } else if(p.lives<0){
+  if(p.lives<0){
     // herstelfase: +1 per raak richting 0
     p.lives=p.lives+1;
     state.history.push({player:p.name,action:`Herstel op ${p.number}`,result:`${p.name}: ${p.lives}`});
     state.killerDartsLeft--;
     if(state.killerDartsLeft<=0) nextKillerPlayer();
     else render();
+
+  } else if(!p.isKiller){
+    // vulfase of hervulfase (killer status kwijt): punten & levens opbouwen
+    const max=state.killerPointsNeeded;
+    const newPoints=p.points+pts;
+    if(newPoints>max){
+      const over=newPoints-max;
+      p.points=max-over;
+      p.lives=p.points;
+      state.history.push({player:p.name,action:`+${pts} op ${p.number} (overgooien!)`,result:`terug naar ${p.points}`});
+    } else {
+      p.points=newPoints;
+      p.lives=p.points;
+      state.history.push({player:p.name,action:`+${pts} op ${p.number}`,result:p.points>=max?'KILLER!':'nog '+(max-p.points)+' nodig'});
+      if(p.points>=max){p.isKiller=true;p.lives=max;}
+    }
+    state.killerDartsLeft--;
+    if(state.killerDartsLeft<=0) nextKillerPlayer();
+    else render();
+
   } else {
-    // attack phase: one action per dart, 3 darts total
-    if(state.killerSelectedTarget===null){alert('Selecteer eerst een doelwit!');return;}
+    // aanvalsfase
+    if(state.killerSelectedTarget===null){state.killerUndoStack.pop();alert('Selecteer eerst een doelwit!');return;}
     const target=state.players[state.killerSelectedTarget];
     target.lives=target.lives-pts;
-    state.history.push({player:p.name,action:`${mult} op nr ${target.number} (${target.name})`,result:`${target.name}: ${target.lives} leven${target.lives!==1?'s':''}`});
+    // killer-status check voor doelwit
+    if(target.isKiller && target.lives<state.killerPointsNeeded){
+      target.isKiller=false;
+      target.points=Math.max(0,target.lives);
+      state.history.push({player:p.name,action:`${mult} op nr ${target.number} (${target.name})`,result:`${target.name}: ${target.lives} — killer status verloren!`});
+    } else {
+      state.history.push({player:p.name,action:`${mult} op nr ${target.number} (${target.name})`,result:`${target.name}: ${target.lives} leven${target.lives!==1?'s':''}`});
+    }
     state.killerSelectedTarget=null;
     const alive=state.players.filter(p=>!p.eliminated);
     if(alive.length===1){state.winner=alive[0].name;state.screen='winner';render();return;}
@@ -539,11 +578,24 @@ function killerThrow(pts,mult){
   }
 }
 function killerMiss(){
+  state.killerUndoStack.push(killerSnapshot());
   const p=state.players[state.currentPlayer];
-  state.history.push({player:p.name,action:p.lives<0?`Mis (herstel mislukt)`:p.isKiller?'Mis':'Mis',result:''});
+  state.history.push({player:p.name,action:p.lives<0?'Mis (herstel mislukt)':'Mis',result:''});
   state.killerDartsLeft--;
   if(state.killerDartsLeft<=0) nextKillerPlayer();
   else render();
+}
+function killerUndo(){
+  if(!state.killerUndoStack||!state.killerUndoStack.length) return;
+  const snap=state.killerUndoStack.pop();
+  state.players=snap.players;
+  state.currentPlayer=snap.currentPlayer;
+  state.killerDartsLeft=snap.killerDartsLeft;
+  state.killerSelectedTarget=snap.killerSelectedTarget;
+  state.winner=snap.winner;
+  state.screen=snap.screen;
+  state.history.pop();
+  render();
 }
 function killerSelectTarget(idx){if(state.players[idx].eliminated||idx===state.currentPlayer)return;state.killerSelectedTarget=idx;render();}
 function nextKillerPlayer(){
@@ -588,12 +640,54 @@ function render(){
   const app=document.getElementById('app');
   const tabs=`<div class="mode-tabs">${MODES.map(m=>`<div class="mode-tab ${state.mode===m?'active':''}" onclick="setMode('${m}')">${m==='killer'?'Killer':m}</div>`).join('')}</div>`;
   if(state.screen==='setup') app.innerHTML=tabs+renderSetup();
+  else if(state.screen==='bullthrow') app.innerHTML=renderBullThrow();
   else if(state.screen==='killer') app.innerHTML=renderKiller();
   else if(state.screen==='winner') app.innerHTML=renderWinner();
   else app.innerHTML=renderGame();
 }
 
-// ─── SETUP ────────────────────────────────────────────────────────────────────
+// ─── BULL THROW ───────────────────────────────────────────────────────────────
+function renderBullThrow(){
+  const humanPlayers=state.players.filter(p=>!p.isBot);
+  const btns=humanPlayers.map((p,i)=>`
+    <button class="target-btn ${state.bullThrowWinner===p.name?'selected':''}" onclick="selectBullWinner('${p.name}')" style="font-size:16px;padding:1rem;">
+      <span class="t-name">${p.name}</span>
+      <span style="font-size:13px;color:var(--text2)">Dichtstbij 🎯</span>
+    </button>`).join('');
+  return `
+    <div class="card" style="text-align:center;margin-bottom:0.75rem;">
+      <div style="font-family:'Rajdhani',sans-serif;font-size:20px;font-weight:700;color:var(--text);margin-bottom:4px">🎯 Bull throw</div>
+      <div style="font-size:13px;color:var(--text2)">Iedereen gooit één pijl op de bull. Wie zat het dichtst?</div>
+    </div>
+    <div class="target-select">${btns}</div>
+    ${state.bullThrowWinner?`<button class="start-btn" onclick="confirmBullWinner()">Start spel →</button>`:''}
+    <button class="new-game-btn" style="margin-top:8px" onclick="skipBullThrow()">Overslaan (volgorde ongewijzigd)</button>`;
+}
+function selectBullWinner(name){
+  state.bullThrowWinner=name;
+  render();
+}
+function confirmBullWinner(){
+  const winnerIdx=state.players.findIndex(p=>p.name===state.bullThrowWinner);
+  if(winnerIdx>0){
+    // schuif winnaar naar voren
+    const winner=state.players.splice(winnerIdx,1)[0];
+    state.players.unshift(winner);
+  }
+  state.currentPlayer=0;
+  state.screen='game'; render();
+  if(state.players[0]&&state.players[0].isBot){
+    setTimeout(()=>{playBotTurn();},600);
+  }
+}
+function skipBullThrow(){
+  state.screen='game'; render();
+  if(state.players[0]&&state.players[0].isBot){
+    setTimeout(()=>{playBotTurn();},600);
+  }
+}
+
+
 function renderSetup(){
   const isKiller=state.mode==='killer';
 
@@ -784,10 +878,26 @@ function renderKiller(){
   return state.killerScreen==='assign'?renderKillerAssign():renderKillerGame();
 }
 function renderKillerAssign(){
+  // Stap 1: bull throw — wie begint?
+  const bullHtml=state.killerBullWinner===null?`
+    <div class="killer-setup-box">
+      <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:10px">Wie zat het dichtst bij de bull?</div>
+      <div style="display:grid;gap:8px;">
+        ${state.players.map((p,i)=>`
+          <button class="target-btn" onclick="killerBullSelect(${i})">
+            <span class="t-name">${p.name}</span>
+            <span style="font-size:12px;color:var(--text2)">begint als eerste</span>
+          </button>`).join('')}
+      </div>
+    </div>`:
+    `<div style="background:var(--green-bg);border:1px solid var(--green-dim);border-radius:8px;padding:0.75rem 1rem;margin-bottom:0.75rem;font-size:13px;color:var(--green);font-weight:600">
+      🎯 ${state.players[0].name} begint — gooit als eerste zijn nummer
+    </div>`;
+
   const rows=state.players.map((p,i)=>`
     <div class="killer-assign-row">
       <div>
-        <div style="font-size:15px;font-weight:700;color:var(--text)">${p.name}</div>
+        <div style="font-size:15px;font-weight:700;color:var(--text)">${i+1}. ${p.name}</div>
         <div style="font-size:11px;color:var(--text3)">${p.isBot?'Bot krijgt automatisch nummer':'Gooi met niet-dominante hand'}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
@@ -797,33 +907,43 @@ function renderKillerAssign(){
         `}
       </div>
     </div>`).join('');
+
   const allAssigned=state.players.every(p=>p.number!==null);
-  return `
+  const assignHtml=state.killerBullWinner!==null?`
     <div style="background:var(--red-bg);border:1px solid var(--red);border-radius:8px;padding:0.75rem 1rem;margin-bottom:0.75rem;font-size:13px;color:var(--red);font-weight:600">
       🎯 Gooi met je niet-dominante hand. Geraakt getal = jouw nummer.
     </div>
     <div class="killer-setup-box">${rows}</div>
-    ${allAssigned?`<button class="start-btn" onclick="killerStartGame()">Start Killer! ⚔️</button>`:''}
+    ${allAssigned?`<button class="start-btn" onclick="killerStartGame()">Start Killer! ⚔️</button>`:''}`:
+    '';
+
+  return `${bullHtml}${assignHtml}
     <button class="new-game-btn" onclick="newGame()">← Terug</button>`;
 }
 function renderKillerGame(){
   const p=state.players[state.currentPlayer];
   const isKiller=p.isKiller;
   const needed=Math.ceil(state.legs/2);
-  const phaseBanner=!p.isKiller && p.lives>=0
-    ?`<div class="phase-banner phase-fill">🎯 Vulfase — Raak nummer ${p.number} (${p.points}/${state.killerPointsNeeded} punten · ${state.killerDartsLeft} pijl${state.killerDartsLeft!==1?'en':''} over)</div>`
-    :p.lives<0
+  const phaseBanner=p.lives<0
     ?`<div class="phase-banner" style="background:var(--orange-bg);color:var(--orange);border:1px solid var(--orange)">⚠️ Herstel! Raak ${Math.abs(p.lives)}x je eigen nummer ${p.number} om te overleven (${state.killerDartsLeft} pijl${state.killerDartsLeft!==1?'en':''} over)</div>`
+    :!p.isKiller && p.points>0
+    ?`<div class="phase-banner" style="background:var(--red-bg);color:var(--red);border:1px solid var(--red)">🔄 Hervulfase — Raak nummer ${p.number} om weer Killer te worden (${p.points}/${state.killerPointsNeeded} · ${state.killerDartsLeft} pijl${state.killerDartsLeft!==1?'en':''} over)</div>`
+    :!p.isKiller
+    ?`<div class="phase-banner phase-fill">🎯 Vulfase — Raak nummer ${p.number} (${p.points}/${state.killerPointsNeeded} punten · ${state.killerDartsLeft} pijl${state.killerDartsLeft!==1?'en':''} over)</div>`
     :`<div class="phase-banner phase-attack">⚔️ Killer — Selecteer doelwit en raak zijn/haar nummer! (${state.killerDartsLeft} pijl${state.killerDartsLeft!==1?'en':''} over)</div>`;
   const playersHtml=state.players.map((pl,i)=>{
-    const lives=Array.from({length:state.killerPointsNeeded},(_,d)=>`<span class="life ${d>=(pl.isKiller?pl.lives:pl.points)?'lost':''}"></span>`).join('')+(pl.lives<0?`<span style="font-size:12px;color:var(--red);margin-left:5px;font-weight:700">${pl.lives}</span>`:pl.lives===0&&pl.isKiller?`<span style="font-size:12px;color:var(--orange);margin-left:5px;font-weight:700">0</span>`:'');
-    const fillDots=!pl.isKiller&&!pl.eliminated?Array.from({length:state.killerPointsNeeded},(_,d)=>`<div class="dot ${d<pl.points?'filled':''}"></div>`).join(''):'';
+    // toon altijd bolletjes op basis van pl.lives (0 t/m killerPointsNeeded)
+    const livesCount=Math.max(0,pl.lives);
+    const liveDots=Array.from({length:state.killerPointsNeeded},(_,d)=>`<span class="life ${d>=livesCount?'lost':''}"></span>`).join('');
+    const livesLabel=pl.lives<0?`<span style="font-size:12px;color:var(--red);margin-left:5px;font-weight:700">${pl.lives}</span>`:pl.lives===0&&pl.isKiller?`<span style="font-size:12px;color:var(--orange);margin-left:5px;font-weight:700">0</span>`:'';
+    const lives=liveDots+livesLabel;
+    const fillDots='';
     const badge=pl.eliminated?`<span class="badge badge-gray">Uit</span>`:pl.isKiller?`<span class="badge badge-red">⚔️ Killer</span>`:i===state.currentPlayer?`<span class="badge badge-green">Beurt</span>`:'';
     return `<div class="player-card ${i===state.currentPlayer&&!pl.eliminated?'active':''} ${pl.isKiller&&!pl.eliminated?'killer-status':''} ${pl.eliminated?'eliminated':''}">
       <div class="player-top">
         <div>
           <div class="player-name">${pl.name} <span style="font-size:10px;color:var(--text3)">nr ${pl.number}</span></div>
-          <div style="margin-top:6px;display:flex;gap:3px;align-items:center">${pl.isKiller||pl.eliminated?lives:fillDots}</div>
+          <div style="margin-top:6px;display:flex;gap:3px;align-items:center">${lives}</div>
         </div>
         <div>${badge}</div>
       </div>
@@ -831,7 +951,6 @@ function renderKillerGame(){
   }).join('');
   let actionArea='';
   if(p.lives<0){
-    // herstelfase: elke raak = +1 leven
     actionArea=`<div class="section-title" style="margin-top:0">Raak je eigen nummer ${p.number} — elke raak = +1 leven:</div>
       <div class="killer-score-btns">
         <button class="kscore-btn ks" onclick="killerThrow(1,'Single')">Raak!<br><small style="font-size:10px;color:var(--orange);font-family:Inter,sans-serif;font-weight:400">+1 leven</small></button>
@@ -839,7 +958,16 @@ function renderKillerGame(){
         <button class="kscore-btn kt" onclick="killerThrow(1,'Triple')" style="border-color:var(--orange);background:var(--orange-bg)">Raak!<br><small style="font-size:10px;color:var(--orange);font-family:Inter,sans-serif;font-weight:400">+1 leven</small></button>
         <button class="kscore-btn kmiss" onclick="killerMiss()" style="grid-column:span 3">Mis / verkeerd getal</button>
       </div>`;
-  } else if(isKiller){
+  } else if(!isKiller){
+    // vulfase of hervulfase
+    actionArea=`<div class="section-title" style="margin-top:0">Wat raakte je op nummer ${p.number}?</div>
+      <div class="killer-score-btns">
+        <button class="kscore-btn ks" onclick="killerThrow(1,'Single')">Single<br><small style="font-size:10px;color:var(--text3);font-family:Inter,sans-serif;font-weight:400">+1 punt</small></button>
+        <button class="kscore-btn kd" onclick="killerThrow(2,'Double')">Double<br><small style="font-size:10px;color:var(--green);font-family:Inter,sans-serif;font-weight:400">+2 punten</small></button>
+        <button class="kscore-btn kt" onclick="killerThrow(3,'Triple')">Triple<br><small style="font-size:10px;color:var(--green);font-family:Inter,sans-serif;font-weight:400">+3 punten</small></button>
+        <button class="kscore-btn kmiss" onclick="killerMiss()" style="grid-column:span 3">Mis / verkeerd getal</button>
+      </div>`;
+  } else {
     const targets=state.players.map((pl,i)=>{
       if(pl.eliminated||i===state.currentPlayer)return'';
       return `<button class="target-btn ${state.killerSelectedTarget===i?'selected':''}" onclick="killerSelectTarget(${i})">
@@ -856,20 +984,13 @@ function renderKillerGame(){
         <button class="kscore-btn kmiss" onclick="killerMiss()" style="grid-column:span 3">Mis / verkeerd getal</button>
       </div>`:`<button class="kscore-btn kmiss" onclick="killerMiss()" style="width:100%;margin-top:0.75rem">Mis / geen getal geraakt</button>`;
     actionArea=`<div class="section-title" style="margin-top:0">Kies doelwit:</div><div class="target-select">${targets}</div>${score_btns}`;
-  } else {
-    actionArea=`<div class="section-title" style="margin-top:0">Wat raakte je op nummer ${p.number}?</div>
-      <div class="killer-score-btns">
-        <button class="kscore-btn ks" onclick="killerThrow(1,'Single')">Single<br><small style="font-size:10px;color:var(--text3);font-family:Inter,sans-serif;font-weight:400">+1 punt</small></button>
-        <button class="kscore-btn kd" onclick="killerThrow(2,'Double')">Double<br><small style="font-size:10px;color:var(--green);font-family:Inter,sans-serif;font-weight:400">+2 punten</small></button>
-        <button class="kscore-btn kt" onclick="killerThrow(3,'Triple')">Triple<br><small style="font-size:10px;color:var(--green);font-family:Inter,sans-serif;font-weight:400">+3 punten</small></button>
-        <button class="kscore-btn kmiss" onclick="killerMiss()" style="grid-column:span 3">Mis / verkeerd getal</button>
-      </div>`;
   }
   const histItems=state.history.slice(-5).reverse().map(h=>`
     <div class="history-item"><span class="h-player">${h.player}</span><span>${h.action}${h.result?' — '+h.result:''}</span></div>`).join('')||`<div style="font-size:12px;color:var(--text3)">Nog geen worpen</div>`;
+  const undoBtn=state.killerUndoStack&&state.killerUndoStack.length?`<button class="undo-btn" onclick="killerUndo()" style="width:100%;margin-bottom:8px">↩ Ongedaan maken</button>`:'';
   return `${phaseBanner}
     <div class="players-grid" style="grid-template-columns:${state.players.length<=2?'1fr 1fr':state.players.length<=4?'1fr 1fr':'repeat(3,1fr)'}">${playersHtml}</div>
-    <div class="card"><div class="card-label">Actie</div>${actionArea}</div>
+    <div class="card"><div class="card-label">Actie</div>${undoBtn}${actionArea}</div>
     <div class="history-box"><div class="card-label">Recente acties</div>${histItems}</div>
     <button class="new-game-btn" onclick="newGame()">← Nieuw spel</button>`;
 }
