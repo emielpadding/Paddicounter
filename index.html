@@ -323,7 +323,7 @@ function describeTarget(t){
 }
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
-const MODES=['501','301','121','killer'];
+const MODES=['501','301','201','121','killer'];
 let state={
   screen:'setup', mode:'501', legs:3, numPlayers:1,
   opponent:'solo', // 'solo' | 'rookie' | 'casual' | 'league' | 'pro'
@@ -334,7 +334,7 @@ let state={
   botTurnResult:null, botTurnDone:false,
 };
 
-function startScore(){return state.mode==='121'?121:state.mode==='301'?301:501;}
+function startScore(){return state.mode==='121'?121:state.mode==='201'?201:state.mode==='301'?301:501;}
 function isBotMode(){return state.opponent!=='solo'&&state.opponent!=null&&['rookie','casual','league','pro'].includes(state.opponent);}
 function isSolo(){return state.opponent==='solo'||state.numPlayers>1;}
 
@@ -366,7 +366,7 @@ function startGame(){
   state.botTurnResult=null; state.botTurnDone=false;
 
   // bull throw optioneel voor 501/301 met 2+ spelers
-  if((state.mode==='501'||state.mode==='301')&&state.players.filter(p=>!p.isBot).length>=2){
+  if((state.mode==='501'||state.mode==='301'||state.mode==='201')&&state.players.filter(p=>!p.isBot).length>=2){
     state.screen='bullthrow';
     state.bullThrowWinner=null;
     render(); return;
@@ -378,31 +378,52 @@ function startGame(){
   }
 }
 
-function mkPlayer(name,isBot){return {name,isBot,score:startScore(),legs:0,throws:0,totalScore:0,busts:0,highScore:0};}
+function mkPlayer(name,isBot){return {name,isBot,score:startScore(),legs:0,throws:0,totalScore:0,busts:0,highScore:0,
+  // geavanceerde stats
+  first9Total:0,first9Turns:0,   // eerste 3 beurten per leg
+  turnInLeg:0,                    // beurt nummer binnen huidige leg
+  checkoutAttempts:0,checkoutsHit:0,  // checkout kansen
+  legScores:[],                   // scores per beurt voor huidige leg
+};}
 function mkKillerPlayer(name,isBot){return {name,isBot,number:null,points:0,lives:0,isKiller:false,eliminated:false,throws:0,totalScore:0,busts:0};}
 
-function newGame(){clearBotTimer();state.screen='setup';state.botTurnResult=null;render();}
+function newGame(){clearBotTimer();releaseWakeLock();state.screen='setup';state.botTurnResult=null;render();}
 
 function applyScore(pts){
   const p=state.players[state.currentPlayer];
   const newScore=p.score-pts;
+  const hadCheckout=!!CHECKOUTS[p.score]&&!IMPOSSIBLE.includes(p.score);
+
   if(newScore<0||newScore===1){
     p.busts++;
-    state.history.push({player:p.name,threw:pts,result:'Bust!',prevScore:p.score,isBot:p.isBot});
+    if(hadCheckout) p.checkoutAttempts++;
+    state.history.push({player:p.name,threw:pts,result:'Bust!',prevScore:p.score,isBot:p.isBot,
+      prevTurnInLeg:p.turnInLeg,prevFirst9Total:p.first9Total,prevFirst9Turns:p.first9Turns,
+      prevCheckoutAttempts:p.checkoutAttempts,prevCheckoutsHit:p.checkoutsHit});
     nextPlayer(); return;
   }
   if(newScore===0){
     p.throws++;p.totalScore+=pts;p.legs++;
     if(pts>p.highScore)p.highScore=pts;
-    state.history.push({player:p.name,threw:pts,result:0,prevScore:p.score,isBot:p.isBot});
+    if(hadCheckout){p.checkoutAttempts++;p.checkoutsHit++;}
+    if(p.turnInLeg<3){p.first9Total+=pts;p.first9Turns++;}
+    state.history.push({player:p.name,threw:pts,result:0,prevScore:p.score,isBot:p.isBot,
+      prevTurnInLeg:p.turnInLeg,prevFirst9Total:p.first9Total,prevFirst9Turns:p.first9Turns,
+      prevCheckoutAttempts:p.checkoutAttempts,prevCheckoutsHit:p.checkoutsHit});
+    p.turnInLeg=0;
     const needed=Math.ceil(state.legs/2);
     if(p.legs>=needed){state.winner=p.name;state.screen='winner';render();return;}
-    state.players.forEach(pl=>pl.score=startScore());
+    state.players.forEach(pl=>{pl.score=startScore();pl.turnInLeg=0;});
     nextPlayer(); return;
   }
   p.throws++;p.totalScore+=pts;
   if(pts>p.highScore)p.highScore=pts;
-  state.history.push({player:p.name,threw:pts,result:newScore,prevScore:p.score,isBot:p.isBot});
+  if(hadCheckout) p.checkoutAttempts++;
+  if(p.turnInLeg<3){p.first9Total+=pts;p.first9Turns++;}
+  p.turnInLeg++;
+  state.history.push({player:p.name,threw:pts,result:newScore,prevScore:p.score,isBot:p.isBot,
+    prevTurnInLeg:p.turnInLeg-1,prevFirst9Total:p.first9Total,prevFirst9Turns:p.first9Turns,
+    prevCheckoutAttempts:p.checkoutAttempts,prevCheckoutsHit:p.checkoutsHit});
   p.score=newScore; nextPlayer();
 }
 
@@ -419,12 +440,18 @@ function nextPlayer(){
 }
 
 function undo(){
+  clearBotTimer();
   if(!state.history.length)return;
   const last=state.history.pop();
   const p=state.players.find(p=>p.name===last.player);
   p.score=last.prevScore;
-  if(last.result!=='Bust!'){p.throws=Math.max(0,p.throws-1);p.totalScore=Math.max(0,p.totalScore-last.threw);}
-  else p.busts=Math.max(0,p.busts-1);
+  if(last.result!=='Bust!'){
+    p.throws=Math.max(0,p.throws-1);
+    p.totalScore=Math.max(0,p.totalScore-last.threw);
+  } else p.busts=Math.max(0,p.busts-1);
+  if(last.prevTurnInLeg!==undefined) p.turnInLeg=last.prevTurnInLeg;
+  if(last.prevFirst9Total!==undefined){p.first9Total=last.prevFirst9Total;p.first9Turns=last.prevFirst9Turns;}
+  if(last.prevCheckoutAttempts!==undefined){p.checkoutAttempts=last.prevCheckoutAttempts;p.checkoutsHit=last.prevCheckoutsHit;}
   state.currentPlayer=state.players.indexOf(p);
   state.inputVal=''; state.botTurnResult=null; state.botTurnDone=false;
   render();
@@ -444,6 +471,9 @@ function throwScore(){
 }
 
 function avg(p){if(!p.throws)return'—';return(p.totalScore/p.throws).toFixed(1);}
+function f9avg(p){if(!p.first9Turns)return'—';return(p.first9Total/p.first9Turns).toFixed(1);}
+function checkoutPct(p){if(!p.checkoutAttempts)return'—';return Math.round(p.checkoutsHit/p.checkoutAttempts*100)+'%';}
+function ppd(p){if(!p.throws)return'—';return(p.totalScore/p.throws/3).toFixed(2);}
 
 // ─── BOT TURN ─────────────────────────────────────────────────────────────────
 let botTimer=null;
@@ -463,7 +493,9 @@ function playBotTurn(){
 
 function confirmBotTurn(){
   clearBotTimer();
+  if(state.screen!=='game')return;
   const p=state.players[state.currentPlayer];
+  if(!p||!p.isBot)return;
   const result=state.botTurnResult;
   if(!result)return;
   const lastDart=result.darts[result.darts.length-1];
@@ -794,14 +826,16 @@ function renderGame(){
     </div>`).join('')||`<div style="font-size:12px;color:var(--text3)">Nog geen worpen</div>`;
 
   const statsHtml=state.players.map(pl=>`
-    <div class="stat-row" style="margin-bottom:8px">
-      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">${pl.name}</div>
+    <div class="stat-row" style="margin-bottom:10px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:5px">${pl.name}</div>
       <div class="stat-pills">
-        <div class="stat-pill"><b>${avg(pl)}</b> avg</div>
-        <div class="stat-pill"><b>${pl.throws}</b> worpen</div>
-        <div class="stat-pill"><b>${pl.highScore||'—'}</b> best</div>
-        <div class="stat-pill"><b>${pl.busts}</b> busts</div>
-        <div class="stat-pill"><b>${pl.legs}</b> legs</div>
+        <div class="stat-pill"><b>${avg(pl)}</b> <span>PPR</span></div>
+        <div class="stat-pill"><b>${ppd(pl)}</b> <span>PPD</span></div>
+        <div class="stat-pill"><b>${f9avg(pl)}</b> <span>F9 avg</span></div>
+        <div class="stat-pill"><b>${checkoutPct(pl)}</b> <span>checkout %</span></div>
+        <div class="stat-pill"><b>${pl.highScore||'—'}</b> <span>best</span></div>
+        <div class="stat-pill"><b>${pl.busts}</b> <span>busts</span></div>
+        <div class="stat-pill"><b>${pl.legs}</b> <span>legs</span></div>
       </div>
     </div>`).join('');
 
@@ -1003,7 +1037,14 @@ function renderWinner(){
     <div class="player-card ${pl.name===state.winner?'active':''}">
       <div class="player-name">${pl.name} ${pl.name===state.winner?'🏆':''}</div>
       <div class="player-score" style="font-size:28px">${isKiller?(pl.eliminated?'Uitgeschakeld':'Winnaar!'):pl.legs+'/'+needed}</div>
-      ${!isKiller?`<div class="player-stats-row"><div class="stat-chip">Avg: <b>${avg(pl)}</b></div><div class="stat-chip">Best: <b>${pl.highScore||'—'}</b></div><div class="stat-chip">Busts: <b>${pl.busts}</b></div></div>`:''}
+      ${!isKiller?`<div class="player-stats-row">
+        <div class="stat-chip">PPR: <b>${avg(pl)}</b></div>
+        <div class="stat-chip">PPD: <b>${ppd(pl)}</b></div>
+        <div class="stat-chip">F9: <b>${f9avg(pl)}</b></div>
+        <div class="stat-chip">CO%: <b>${checkoutPct(pl)}</b></div>
+        <div class="stat-chip">Best: <b>${pl.highScore||'—'}</b></div>
+        <div class="stat-chip">Busts: <b>${pl.busts}</b></div>
+      </div>`:''}
     </div>`).join('');
   return `
     <div class="winner-banner"><h2>${state.winner} wint! 🎯</h2><p>Gefeliciteerd!</p></div>
@@ -1013,6 +1054,26 @@ function renderWinner(){
 
 render();
 
+// ─── SCREEN WAKE LOCK ─────────────────────────────────────────────────────────
+let wakeLock=null;
+async function requestWakeLock(){
+  if('wakeLock' in navigator){
+    try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
+  }
+}
+async function releaseWakeLock(){
+  if(wakeLock){try{await wakeLock.release();wakeLock=null;}catch(e){}}
+}
+// heractiveer als gebruiker terugkomt naar de tab
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&(state.screen==='game'||state.screen==='killer'||state.screen==='bullthrow')){
+    requestWakeLock();
+  }
+});
+// activeer direct als spel actief is
+(function checkWakeLock(){
+  if(state.screen==='game'||state.screen==='killer'||state.screen==='bullthrow') requestWakeLock();
+})();
 
 </script>
 </body>
